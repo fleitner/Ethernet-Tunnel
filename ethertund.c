@@ -15,6 +15,8 @@
 #include <linux/if_tun.h>
 #include <errno.h>
 
+#define ETHERTUN_VERSION "0.6"
+
 //#define DEBUG
 
 /* allow jumbo frames - 9000 bytes */
@@ -266,6 +268,7 @@ void parser_macaddr(unsigned char *buffer, unsigned char *macaddr)
 
 void usage(void)
 {
+	printf("Ethernet tunneling - version %s\n", ETHERTUN_VERSION);
 	printf(" --hdevname <iface name>\tSets the host's interface name\n");
 	printf("                        \tDefault: host0\n");
 	printf(" --hdevmac <macaddr>\t\tSets the host's interface MAC ADDR\n");
