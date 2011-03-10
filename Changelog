@@ -1,0 +1,8 @@
+Thu 10 Mar 2011 Flavio Leitner <fleitner@redhat.com> 0.5
+- docs, examples, cmd line, initscript, pthread
+
+Tue 22 Feb 2011 Flavio Leitner <fleitner@redhat.com> 0.2
+- bunch of small fixes
+
+Mon 21 Feb 2011 Flavio Leitner <fleitner@redhat.com> 0.1
+- initial release

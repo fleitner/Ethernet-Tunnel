@@ -1,0 +1,6 @@
+# Bridge tunneling device
+DEVICE=btun0
+BOOTPROTO=none
+HWADDR=FE:21:11:33:6D:05
+ONBOOT=yes
+BRIDGE=br0

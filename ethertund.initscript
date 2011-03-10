@@ -1,0 +1,64 @@
+#! /bin/bash
+#
+# ethertund    Bring up/down ethertund
+#
+# chkconfig: - 09 91
+# description: Activates/Deactivates ethertund interfaces configured to \
+#              start at boot time.
+#
+### BEGIN INIT INFO
+# Short-Description: Bring up/down ethertund networking
+# Description: Bring up/down ethertund networking
+### END INIT INFO
+
+# Source function library.
+. /etc/init.d/functions
+
+if [ ! -f /etc/sysconfig/network ]; then
+    exit 6
+fi
+
+. /etc/sysconfig/network
+
+# Check that networking is up.
+[ "${NETWORKING}" = "no" ] && exit 6
+
+CWD=$(pwd)
+cd /etc/sysconfig/network-scripts
+
+. ./network-functions
+
+
+CMD="/usr/local/sbin/ethertund"
+
+# See how we were called.
+case "$1" in
+  start)
+	[ "$EUID" != "0" ] && exit 4
+	rc=0
+	# bring up loopback interface
+	action $"Bringing up ethernet tunnel interfaces: " $CMD
+	;;
+
+  stop)
+	[ "$EUID" != "0" ] && exit 4
+	PRG=`basename $CMD`
+	killall -TERM $PRG
+	rc=0
+        ;;
+  status)
+	PRG=`basename $CMD`
+	PID=`pidof $PRG`
+	echo $"Ethernet tunnel running PID: $PID"
+	rc=0
+	;;
+  restart|reload|force-reload)
+	echo $"not supported"
+	rc=1
+	;;
+  *)
+        echo $"Usage: $0 {start|stop|status|restart|reload|force-reload}"
+        exit 2
+esac
+
+exit $rc

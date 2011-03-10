@@ -1,0 +1,20 @@
+
+1. Copy the 'ethertund' to /usr/local/sbin
+# cp ethertund /usr/local/sbin
+
+2. Copy the 'ethertund.initscript' as 'ethertund' to /etc/init.d/
+# cp ethertund.initscript /etc/init.d/ethertund
+
+3. enable the system service
+# chkconfig --add ethertund
+# chkconfig ethertund on
+
+4. copy the config files and fix them accordingly
+# cp configs/ifcfg-* /etc/sysconfig/network-scripts/
+
+5. start the service
+# service ethertund start
+
+6. restart the network service
+# service network restart
+

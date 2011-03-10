@@ -1,0 +1,7 @@
+# Virtual host's ethernet tunneling interface
+DEVICE=host0
+BOOTPROTO=none
+HWADDR=FE:21:12:74:F3:88
+ONBOOT=yes
+IPADDR=172.31.1.200
+NETMASK=255.255.255.0
