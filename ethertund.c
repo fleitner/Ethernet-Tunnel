@@ -14,13 +14,13 @@
 #include <linux/if_ether.h>
 #include <linux/if_tun.h>
 #include <errno.h>
+#include "forward.h"
+#include "sysrw.h"
 
-#define ETHERTUN_VERSION "0.6"
+#define ETHERTUN_VERSION "0.7"
 
 //#define DEBUG
 
-/* allow jumbo frames - 9000 bytes */
-#define ETHERTUN_DEFAULT_MTU	9000
 #define	ETHERTUN_MAX_EVENTS	10
 #define	ETHERTUN_TIMEOUT	-1
 
@@ -33,9 +33,7 @@ struct ether_tunnel {
 	unsigned char bridge_devmac[ETH_ALEN];
 	int host_fd;
 	int bridge_fd;
-	int buffer_len;
-	char *tx_buffer;
-	char *rx_buffer;
+	struct forward_operations op;
 };
 
 void sigterm_handler(int signum)
@@ -110,28 +108,38 @@ out:
 }
 
 
-int forward_packet(int orig, int dest, char *buffer, int len)
+int transmit_loop(struct ether_tunnel *ethert, enum direction dir)
 {
-	int bytes;
-	while ((bytes = read(orig, buffer, len)) > 0)
-		write(dest, buffer, bytes);
-}
-
-
-int transmit_loop(int orig, int dest, char *buffer, int len)
-{
+	ssize_t (*forward) (void *, struct forward_cmd *);
+	void *data;
+	struct forward_cmd cmd;
 	struct epoll_event events;
 	int epoll_fd;
 	int rc;
 
+	cmd.fd1 = ethert->host_fd;
+	cmd.fd2 = ethert->bridge_fd;
+	cmd.dir = dir;
+	cmd.length = PACKET_LENGTH;
+
 	epoll_fd = epoll_create(1);
 	events.events = EPOLLIN | EPOLLPRI | EPOLLERR | EPOLLHUP;
-	events.data.fd = orig;
-	rc = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, orig, &events);
+	if (dir == fd1TOfd2) {
+		events.data.fd = cmd.fd1;
+		rc = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, cmd.fd1, &events);
+	}
+	else {
+		events.data.fd = cmd.fd2;
+		rc = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, cmd.fd2, &events);
+	}
+
 	if (rc < 0) {
 		perror("epoll_ctl add failed");
 		goto out;
 	}
+
+	forward = ethert->op.forward;
+	data = ethert->op.data;
 
 	/* connect each other */
 	while (1) {
@@ -147,7 +155,7 @@ int transmit_loop(int orig, int dest, char *buffer, int len)
 			goto out;
 		}
 
-		forward_packet(orig, dest, buffer, len);
+		forward(data, &cmd);
 	}
 
 	rc = 0;
@@ -160,8 +168,7 @@ void *tx_thread_func(void *ptr)
 {
 	struct ether_tunnel *ethert = (struct ether_tunnel *)ptr;
 
-	transmit_loop(ethert->host_fd, ethert->bridge_fd,
-		      ethert->tx_buffer, ethert->buffer_len);
+	transmit_loop(ethert, fd1TOfd2);
 	pthread_exit(NULL);
 }
 
@@ -169,8 +176,7 @@ void *rx_thread_func(void *ptr)
 {
 	struct ether_tunnel *ethert = (struct ether_tunnel *)ptr;
 
-	transmit_loop(ethert->bridge_fd, ethert->host_fd,
-		      ethert->rx_buffer, ethert->buffer_len);
+	transmit_loop(ethert, fd2TOfd1);
 	pthread_exit(NULL);
 }
 
@@ -196,7 +202,7 @@ int stop_tunnel(struct ether_tunnel *ethert)
 	pthread_join(ethert->rx_thread, NULL);
 }
 
-int create_tunnel(struct ether_tunnel *ethert)
+int create_tunnel(struct ether_tunnel *ethert, int method)
 {
 	int fd;
 
@@ -220,19 +226,19 @@ int create_tunnel(struct ether_tunnel *ethert)
 	set_nonblock(fd);
 	ethert->bridge_fd = fd;
 
-	ethert->tx_buffer = malloc(ethert->buffer_len);
-	if (ethert->tx_buffer == NULL) {
-		close(ethert->bridge_fd);
-		close(ethert->host_fd);
-		return -ENOMEM;
+	switch (method) {
+		case 0:
+		default:
+			ethert->op.init = sysrw_init;
+			ethert->op.destroy = sysrw_destroy;
+			ethert->op.forward = sysrw_forward;
+			break;
 	}
 
-	ethert->rx_buffer = malloc(ethert->buffer_len);
-	if (ethert->rx_buffer == NULL) {
-		free(ethert->tx_buffer);
+	if (ethert->op.init(&ethert->op.data)) {
 		close(ethert->bridge_fd);
 		close(ethert->host_fd);
-		return -ENOMEM;
+		return -1;
 	}
 
 	return 0;
@@ -241,10 +247,9 @@ int create_tunnel(struct ether_tunnel *ethert)
 int destroy_tunnel(struct ether_tunnel *ethert)
 {
 	/* close the resources */
+	ethert->op.destroy(ethert->op.data);
 	close(ethert->host_fd);
 	close(ethert->bridge_fd);
-	free(ethert->tx_buffer);
-	free(ethert->rx_buffer);
 }
 
 void parser_macaddr(unsigned char *buffer, unsigned char *macaddr)
@@ -277,8 +282,8 @@ void usage(void)
 	printf("                        \tDefault: btun0\n");
 	printf(" --tdevmac <macaddr>\t\tSets the tunnel's interface MAC ADDR\n");
 	printf("                    \t\tDefault: FE:21:11:33:6D:05\n");
-	printf(" --buffer_len <length>\t\tSets TX and RX buffer length\n");
-	printf("                      \t\tDefault: %d\n", ETHERTUN_DEFAULT_MTU);
+	printf(" --sysrw\t\t\tUse read/write syscalls\n");
+	printf("                      \t\tDefault: sysrw\n");
 	printf("\n");
 }
 
@@ -289,13 +294,13 @@ int main(int argc, char *argv[])
 	unsigned char bridge_devmac[] = { 0xFE, 0x21, 0x11, 0x33, 0x6D, 0x05 };
 	unsigned char host_devmac[] = { 0xFE, 0x21, 0x12, 0x74, 0xF3, 0x88 };
 	int c;
+	int method = 0;
 
 	/* defaults */
 	sprintf(ethert.bridge_devname, "%s", "btun0");
 	memcpy(ethert.bridge_devmac, bridge_devmac, ETH_ALEN);
 	sprintf(ethert.host_devname, "%s", "host0");
 	memcpy(ethert.host_devmac, host_devmac, ETH_ALEN);
-	ethert.buffer_len = ETHERTUN_DEFAULT_MTU;
 
 	while (1) {
 		int option_index = 0;
@@ -304,7 +309,7 @@ int main(int argc, char *argv[])
 			{"hdevmac", 1, 0, 0},
 			{"tdevname", 1, 0, 0},
 			{"tdevmac", 1, 0, 0},
-			{"buffer_len", 1, 0, 0},
+			{"sysrw", 0, 0, 0},
 			{"help", 0, 0, 0},
 			{0, 0, 0, 0}
 		};
@@ -315,51 +320,31 @@ int main(int argc, char *argv[])
 
 		switch (option_index) {
 			case 0:
-			snprintf(ethert.host_devname, IFNAMSIZ, "%s", optarg);
-			break;
+				snprintf(ethert.host_devname, IFNAMSIZ, "%s", optarg);
+				break;
 
 			case 1:
-			parser_macaddr(ethert.host_devmac, optarg);
-			break;
+				parser_macaddr(ethert.host_devmac, optarg);
+				break;
 
 			case 2:
-			snprintf(ethert.bridge_devname, IFNAMSIZ, "%s", optarg);
-			break;
+				snprintf(ethert.bridge_devname, IFNAMSIZ, "%s", optarg);
+				break;
 
 			case 3:
-			parser_macaddr(ethert.bridge_devmac, optarg);
-			break;
+				parser_macaddr(ethert.bridge_devmac, optarg);
+				break;
 
 			case 4:
-			ethert.buffer_len = atoi(optarg);
-			break;
+				method = 0;
+				break;
 
 			case 5:
 			default:
-			usage();
-			return -1;
+				usage();
+				return -1;
 		}
 	}
-
-#ifdef DEBUG
-	printf("%s: %.2x %.2x %.2x %.2x %.2x %.2x\n",
-			ethert.host_devname,
-			ethert.host_devmac[0],
-			ethert.host_devmac[1],
-			ethert.host_devmac[2],
-			ethert.host_devmac[3],
-			ethert.host_devmac[4],
-			ethert.host_devmac[5]);
-	printf("%s: %.2x %.2x %.2x %.2x %.2x %.2x\n",
-			ethert.bridge_devname,
-			ethert.bridge_devmac[0],
-			ethert.bridge_devmac[1],
-			ethert.bridge_devmac[2],
-			ethert.bridge_devmac[3],
-			ethert.bridge_devmac[4],
-			ethert.bridge_devmac[5]);
-	exit(0);
-#endif
 
 	signal(SIGTERM, sigterm_handler);
 
@@ -367,7 +352,7 @@ int main(int argc, char *argv[])
 	daemon(0,0);
 #endif
 
-	if (create_tunnel(&ethert))
+	if (create_tunnel(&ethert, method))
 		goto out;
 
 	if (start_tunnel(&ethert))
